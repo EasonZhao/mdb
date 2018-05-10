@@ -26,7 +26,7 @@ type Configuration struct {
 func init() {
 	//init log
 	logs.SetLogger(logs.AdapterFile, `{"filename":"./logs/debug.log","level":7,"maxlines":0,"maxsize":0,"daily":true,"maxdays":10}`)
-	logs.Async(1e3)
+	//logs.Async(1e3)
 
 	config := loadConf("./conf.json")
 
@@ -110,9 +110,17 @@ func writeToDB(b *Block) bool {
 }
 
 func zmq_receive(c *chan *Block) {
-	subscriber, _ := zmq.NewSocket(zmq.SUB)
+	subscriber, err := zmq.NewSocket(zmq.SUB)
+	if err != nil {
+		logs.Critical("zmq NewSocket failure, err = ", err)
+		panic(err)
+	}
 	defer subscriber.Close()
-	subscriber.Connect("tcp://127.0.0.1:28332")
+	err = subscriber.Connect("tcp://127.0.0.1:28332")
+	if err != nil {
+		logs.Critical("zmq Connect failure, err = ", err)
+		panic(err)
+	}
 	subscriber.SetSubscribe("rawblock")
 	for {
 		msgs, e := subscriber.RecvMessageBytes(0)
@@ -149,10 +157,36 @@ func writeMysql(c *chan *Block) {
 	}
 }
 
+func loadHash() error {
+	offset := 0
+	for {
+		var hashs []Block
+		qs := o.QueryTable("block").Offset(offset)
+		num, err := qs.All(&hashs, "height", "hash")
+		if err != nil {
+			return err
+		}
+		if num == 0 {
+			return nil
+		}
+		for _, v := range hashs {
+			cache[v.Hash] = v.Height
+		}
+		offset += len(hashs)
+	}
+}
+
 func main() {
 	orm.RunCommand()
 	o = orm.NewOrm()
 	o.Using("dafalut")
+
+	err := loadHash()
+	if err != nil {
+		logs.Critical("load index failure, err = ", err)
+		panic(err)
+	}
+	logs.Info("Load hash height = ", len(cache))
 
 	ch1 := make(chan *Block)
 	go zmq_receive(&ch1)
